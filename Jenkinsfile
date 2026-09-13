@@ -166,7 +166,7 @@ pipeline {
                     </ul>
                     <p>All unit and integration tests passed, the container was built, pushed to Docker Hub, and deployed via Docker Compose.</p>
                 """,
-                to: "${env.NOTIFICATION_EMAIL}",
+                to: 'vijay.vignesh96000@gmail.com',
                 mimeType: 'text/html'
             )
         }
@@ -186,7 +186,7 @@ pipeline {
                     </ul>
                     <p>Please check the console output to diagnose the issue.</p>
                 """,
-                to: "${env.NOTIFICATION_EMAIL}",
+                to: 'vijay.vignesh96000@gmail.com',
                 mimeType: 'text/html'
             )
         }
