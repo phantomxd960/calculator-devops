@@ -55,16 +55,16 @@ pipeline {
                 script {
                     try {
                         if (isUnix()) {
-                            sh 'mvn test'
+                            sh 'mvn clean test'
                         } else {
-                            bat 'mvn test'
+                            bat 'mvn clean test'
                         }
                     } catch (Exception e) {
                         echo "Host maven not found, executing tests inside maven:3.9-eclipse-temurin-17 container..."
                         if (isUnix()) {
-                            sh 'docker run --rm -v "${PWD}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn test'
+                            sh 'docker run --rm -v "${PWD}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn clean test'
                         } else {
-                            bat 'docker run --rm -v "%WORKSPACE%":/workspace -w /workspace maven:3.9-eclipse-temurin-17 mvn test'
+                            bat 'docker run --rm -v "%WORKSPACE%":/workspace -w /workspace maven:3.9-eclipse-temurin-17 mvn clean test'
                         }
                     }
                 }
