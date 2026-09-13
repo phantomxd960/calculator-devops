@@ -32,10 +32,19 @@ pipeline {
             steps {
                 echo "=== Stage 2: Compiling and Packaging Spring Boot JAR ==="
                 script {
-                    if (isUnix()) {
-                        sh 'mvn clean package -DskipTests'
-                    } else {
-                        bat 'mvn clean package -DskipTests'
+                    try {
+                        if (isUnix()) {
+                            sh 'mvn clean package -DskipTests'
+                        } else {
+                            bat 'mvn clean package -DskipTests'
+                        }
+                    } catch (Exception e) {
+                        echo "Host maven not found, executing inside maven:3.9-eclipse-temurin-17 container..."
+                        if (isUnix()) {
+                            sh 'docker run --rm -v "${PWD}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn clean package -DskipTests'
+                        } else {
+                            bat 'docker run --rm -v "%WORKSPACE%":/workspace -w /workspace maven:3.9-eclipse-temurin-17 mvn clean package -DskipTests'
+                        }
                     }
                 }
             }
@@ -45,10 +54,19 @@ pipeline {
             steps {
                 echo "=== Stage 3: Running JUnit 5 Unit & MockMvc Integration Tests ==="
                 script {
-                    if (isUnix()) {
-                        sh 'mvn test'
-                    } else {
-                        bat 'mvn test'
+                    try {
+                        if (isUnix()) {
+                            sh 'mvn test'
+                        } else {
+                            bat 'mvn test'
+                        }
+                    } catch (Exception e) {
+                        echo "Host maven not found, executing tests inside maven:3.9-eclipse-temurin-17 container..."
+                        if (isUnix()) {
+                            sh 'docker run --rm -v "${PWD}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn test'
+                        } else {
+                            bat 'docker run --rm -v "%WORKSPACE%":/workspace -w /workspace maven:3.9-eclipse-temurin-17 mvn test'
+                        }
                     }
                 }
             }
