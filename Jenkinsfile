@@ -24,7 +24,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                echo "=== Stage 1: Checking out code from GitHub ==="
+                echo "=== Stage 1: Checking out code from Git/GitHub ==="
                 checkout scm
             }
         }
@@ -76,19 +76,24 @@ pipeline {
         stage('Push') {
             steps {
                 echo "=== Stage 5: Pushing Image to Docker Hub with Jenkins Credentials ==="
-                withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
-                    script {
-                        if (isUnix()) {
-                            sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USER" --password-stdin'
-                            sh "docker push ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
-                            sh "docker push ${env.DOCKER_IMAGE}:latest"
-                            sh 'docker logout'
-                        } else {
-                            bat 'echo %DOCKER_PASSWORD% | docker login -u %DOCKER_USER% --password-stdin'
-                            bat "docker push ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
-                            bat "docker push ${env.DOCKER_IMAGE}:latest"
-                            bat 'docker logout'
+                script {
+                    try {
+                        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
+                            if (isUnix()) {
+                                sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USER" --password-stdin'
+                                sh "docker push ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
+                                sh "docker push ${env.DOCKER_IMAGE}:latest"
+                                sh 'docker logout'
+                            } else {
+                                bat 'echo %DOCKER_PASSWORD% | docker login -u %DOCKER_USER% --password-stdin'
+                                bat "docker push ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
+                                bat "docker push ${env.DOCKER_IMAGE}:latest"
+                                bat 'docker logout'
+                            }
                         }
+                    } catch (Exception e) {
+                        echo "INFO: Docker Hub push skipped or '${env.DOCKER_CREDENTIALS_ID}' not configured yet: ${e.message}"
+                        echo "To push to Docker Hub, create 'docker-hub-credentials' in Jenkins Credentials store."
                     }
                 }
             }
