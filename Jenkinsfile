@@ -9,7 +9,6 @@ pipeline {
     }
 
     triggers {
-        // Poll SCM every 5 minutes as a fallback; GitHub webhook push triggers automatically
         pollSCM('H/5 * * * *')
         githubPush()
     }
@@ -190,10 +189,6 @@ pipeline {
                 to: "${env.NOTIFICATION_EMAIL}",
                 mimeType: 'text/html'
             )
-        }
-
-        always {
-            cleanWs deleteDirs: false, notFailBuild: true
         }
     }
 }
