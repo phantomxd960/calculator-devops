@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE       = 'vijay96000/calculator-api'
+        DOCKER_IMAGE       = 'vijayvignesh960/calculator-api'
         DOCKER_CREDENTIALS = 'DockerHubCred'
         NOTIFICATION_EMAIL = 'vijay.vignesh96000@gmail.com'
         JAVA_HOME          = '/usr/lib/jvm/java-17-openjdk-amd64'
