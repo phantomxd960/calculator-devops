@@ -11,6 +11,7 @@
 > **Institution**: International Institute of Information Technology, Bangalore (IIIT-B)  
 > **Faculty**: Prof. B. Thangaraju  
 > **Project**: End-to-End CI/CD Pipeline for a Calculator REST API (Mini-Project)
+> **Docker Hub image**: [`vijayvignesh960/calculator-api`](https://hub.docker.com/r/vijayvignesh960/calculator-api)
 
 ---
 
@@ -65,6 +66,9 @@ Base URL: `http://localhost/` (via Nginx Reverse Proxy) or `http://localhost:808
 | **Multiply** | `GET` | `/api/v1/multiply` | `a` (numeric), `b` (numeric) | `{ "operation": "multiply", "a": 6.0, "b": 7.0, "result": 42.0 }` | HTTP 400 on missing or invalid non-numeric inputs |
 | **Divide** | `GET` | `/api/v1/divide` | `a` (numeric), `b` (numeric) | `{ "operation": "divide", "a": 20.0, "b": 4.0, "result": 5.0 }` | **HTTP 400** if `b=0` with structured JSON error |
 | **Health Check** | `GET` | `/actuator/health` | _None_ | `{"status":"UP", ...}` | Returns health metrics probe |
+
+All errors share one JSON shape (`timestamp`, `status`, `error`, `message`, `path`):
+missing / non-numeric / `NaN` / `Infinity` parameters and overflowing results → **400**, division by zero → **400**, unknown endpoint → **404**.
 
 ---
 
@@ -156,7 +160,22 @@ curl -i "http://localhost/api/v1/add?a=xyz&b=5"
 }
 ```
 
-#### 7. Actuator Health Probe
+#### 7. Unknown Endpoint
+```bash
+curl -i "http://localhost/api/v1/power"
+```
+**Response (HTTP/1.1 404 Not Found):**
+```json
+{
+  "timestamp": "2026-10-10T11:24:04.543Z",
+  "status": 404,
+  "error": "Not Found",
+  "message": "No endpoint found for /api/v1/power",
+  "path": "/api/v1/power"
+}
+```
+
+#### 8. Actuator Health Probe
 ```bash
 curl -s "http://localhost/actuator/health"
 ```
@@ -180,9 +199,11 @@ curl -s "http://localhost/actuator/health"
 ## 3. Local Development & Testing
 
 ### 3.1 Prerequisites
-- Java 17+ (JDK)
-- Apache Maven 3.9+ (or via Docker)
-- Docker & Docker Compose
+This is a Linux project; on Windows everything runs inside **WSL 2 (Ubuntu 24.04)**:
+```bash
+sudo apt install -y openjdk-17-jdk maven git docker.io docker-compose-v2
+sudo usermod -aG docker $USER      # log out/in afterwards
+```
 
 ### 3.2 Build the Project
 ```bash
@@ -191,9 +212,9 @@ mvn clean package -DskipTests
 
 ### 3.3 Execute Tests & Generate Reports
 ```bash
-mvn clean test
+mvn test
 ```
-All unit tests and Spring MVC `MockMvc` integration tests run automatically. The JUnit XML test reports are generated in:
+All 28 unit tests and Spring MVC `MockMvc` integration tests run automatically. The JUnit XML test reports are generated in:
 ```
 target/surefire-reports/TEST-*.xml
 ```
@@ -210,12 +231,13 @@ The project uses a **multi-stage `Dockerfile`** following container security and
 
 ### Build Image
 ```bash
-docker build -t calculator-api:1.0.0 -t calculator-api:latest .
+docker build -t vijayvignesh960/calculator-api:latest .
 ```
 
 ### Run Container Standalone
 ```bash
-docker run -d --name calculator-api -p 8080:8080 calculator-api:latest
+docker run -d --name calculator-api -p 8080:8080 vijayvignesh960/calculator-api:latest
+curl "http://localhost:8080/api/v1/multiply?a=6&b=7"
 ```
 
 ---
@@ -227,9 +249,15 @@ The deployment stack includes:
 2. **`reverse-proxy`**: Nginx web server on port 80 serving as the reverse proxy gateway.
 3. **`calculator-net`**: Isolated custom bridge network connecting the two containers.
 
+The Compose project name is pinned (`name: calculator-stack`) so a local run and a Jenkins run manage the same
+containers. The API image is `${DOCKER_IMAGE}:${IMAGE_TAG}` (defaults: `vijayvignesh960/calculator-api:latest`);
+Jenkins sets `IMAGE_TAG` to the build number. Nginx resolves `calculator-api` through Docker's DNS at request
+time, so it keeps routing correctly after the API container is recreated.
+
 ### Start Stack
 ```bash
 docker compose up -d --build
+./demo.sh            # checks containers, non-root user, every endpoint and error case
 ```
 
 ### Check Container Health Status
@@ -246,32 +274,46 @@ docker compose down
 
 ## 6. Declarative Jenkins CI/CD Pipeline
 
-The `Jenkinsfile` defines a fully automated, idempotent 6-stage pipeline:
+The `Jenkinsfile` defines a 6-stage declarative pipeline, triggered by a **GitHub webhook** (with Poll SCM every 2 minutes as fallback):
 
 | Stage | Action |
 |---|---|
-| **1. Checkout** | Pulls latest commit from GitHub upon Webhook trigger or SCM poll |
-| **2. Build** | Compiles and packages Spring Boot application using `mvn clean package -DskipTests` |
-| **3. Test** | Runs unit & integration tests (`mvn test`), publishes JUnit reports via `junit`, fails build on any test regression |
-| **4. Docker Build** | Builds multi-stage Docker image tagged with both `${BUILD_NUMBER}` and `latest` |
-| **5. Push** | Authenticates securely to Docker Hub using Jenkins credentials (`docker-hub-credentials`) and pushes images |
-| **6. Deploy** | Deploys stack with `docker compose up -d`, polls `/actuator/health` to guarantee zero-downtime healthy release |
-| **Post Actions** | Sends rich HTML email notification to `vijay.vignesh96000@gmail.com` on build success or failure |
+| **1. Checkout** | `checkout scm` of the pushed commit on `main` |
+| **2. Build** | `mvn -B clean package -DskipTests` |
+| **3. Test** | `mvn -B test`; JUnit XML published with `junit`; any failing test fails the build |
+| **4. Docker Build** | `docker.build("vijayvignesh960/calculator-api:${BUILD_NUMBER}")`, also tagged `latest` |
+| **5. Push** | `docker.withRegistry('', 'DockerHubCred')` pushes both tags; a failed push fails the build |
+| **6. Deploy** | `IMAGE_TAG=${BUILD_NUMBER} docker compose up -d`, then polls `http://localhost/actuator/health` until `UP` |
+| **Post** | `emailext` HTML mail to `vijay.vignesh96000@gmail.com` on success and on failure (log attached) |
 
-### Jenkins Configuration Steps:
-1. **Install Plugins**:
-   - Git Plugin
-   - Pipeline Plugin
-   - Docker Pipeline
-   - Email Extension Plugin (`email-ext`)
-2. **Credentials Setup**:
-   - Go to `Manage Jenkins` -> `Credentials` -> `System` -> `Global credentials`.
-   - Add **Username with password** with ID: `docker-hub-credentials`.
-   - Enter your Docker Hub username and access token/password.
-3. **Pipeline Job**:
-   - Create a **Pipeline** job named `calculator-ci-cd`.
-   - Select **Pipeline script from SCM**, choose **Git**, enter your GitHub repo URL, and set script path to `Jenkinsfile`.
-   - Enable **GitHub hook trigger for GITScm polling**.
+**Idempotent re-runs**: Deploy never runs `docker compose down`. `up -d` only recreates the containers whose image or
+config changed, so Nginx stays up and a re-run of the same commit leaves a healthy stack healthy.
+
+### 6.1 Jenkins Setup (Ubuntu / WSL)
+1. **Install** (as in the Jenkins lab):
+   ```bash
+   sudo curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key -o /usr/share/keyrings/jenkins-keyring.asc
+   echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"      | sudo tee /etc/apt/sources.list.d/jenkins.list
+   sudo apt update && sudo apt install -y jenkins
+   sudo usermod -aG docker jenkins && sudo systemctl enable --now jenkins
+   ```
+2. **Plugins**: suggested plugins + Docker Pipeline, Email Extension, GitHub, Pipeline Stage View.
+3. **Credentials** (`Manage Jenkins → Credentials → Global`) — nothing is hard-coded in the repo:
+
+   | ID | Kind | Used for |
+   |---|---|---|
+   | `DockerHubCred` | Username + Docker Hub access token (Read & Write) | Push stage |
+   | `github-cred` | Username + GitHub token | Cloning the private repository |
+   | `github-token` | Secret text | GitHub server config |
+   | `github-webhook-secret` | Secret text | Verifying webhook signatures |
+   | `gmail-smtp` | Username + Gmail app password | Email notifications |
+4. **Email** (`Manage Jenkins → System`): SMTP `smtp.gmail.com`, port `465`, SSL, credentials `gmail-smtp`,
+   for both *E-mail Notification* and *Extended E-mail Notification*.
+5. **Job**: Pipeline `calculator-devops` → *Pipeline script from SCM* → Git
+   `https://github.com/phantomxd960/calculator-devops.git` (credentials `github-cred`), branch `*/main`, script `Jenkinsfile`;
+   enable *GitHub hook trigger for GITScm polling*.
+6. **Webhook**: Jenkins runs on a laptop, so ngrok exposes it: `ngrok http 8080`. The GitHub webhook points at
+   `https://<ngrok-domain>/github-webhook/` (content type JSON, push events, secret = `github-webhook-secret`).
 
 ---
 
@@ -283,6 +325,8 @@ calculator-devops/
 ├── .gitignore                    # Git ignore for Maven, IDEs, and secrets
 ├── Dockerfile                    # Multi-stage Dockerfile (Maven builder + Alpine JRE)
 ├── Jenkinsfile                   # Declarative CI/CD pipeline (6 stages + email)
+├── .gitattributes                # LF line endings for the Linux build
+├── demo.sh                       # Live-demo self-check script
 ├── README.md                     # Complete project documentation
 ├── REPORT.md                     # Formal project submission report
 ├── docker-compose.yml            # Multi-container orchestration (App + Nginx)

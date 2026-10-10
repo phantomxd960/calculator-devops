@@ -13,7 +13,7 @@
 
     <groupId>com.calculator</groupId>
     <artifactId>calculator-api</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <name>calculator-api</name>
     <description>Calculator REST API with automated CI/CD pipeline</description>
 
