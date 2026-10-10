@@ -17,7 +17,7 @@
 
 This project implements a fully automated, production-grade Continuous Integration and Continuous Delivery (CI/CD) pipeline for a cloud-native Calculator REST API developed using Java 17, Spring Boot 3.2.5, and Apache Maven. The objective is to build a reliable DevOps workflow spanning version control (Git/GitHub), automated build and test orchestration (Jenkins Declarative Pipeline), containerization (Docker multi-stage builds), and multi-container deployment orchestration (Docker Compose with an Nginx reverse proxy).
 
-The application exposes mathematical operations (`add`, `subtract`, `multiply`, `divide`) and health monitoring (`/actuator/health`). All inputs are strictly validated, producing RFC 7807-compliant structured HTTP 400 JSON errors for invalid parameters and division by zero. The pipeline ensures zero-touch deployment: any code pushed to the GitHub repository automatically triggers the Jenkins pipeline, executes 24 unit and integration tests, builds an optimized non-root container image, publishes the image to Docker Hub, and idempotently rolls out the deployment via Docker Compose with health verification and email alerting.
+The application exposes mathematical operations (`add`, `subtract`, `multiply`, `divide`) and health monitoring (`/actuator/health`). All inputs are strictly validated, producing structured JSON errors: HTTP 400 for missing, non-numeric or non-finite parameters and division by zero, and HTTP 404 for unknown endpoints. The pipeline ensures zero-touch deployment: any code pushed to the GitHub repository automatically triggers the Jenkins pipeline, executes 28 unit and integration tests, builds an optimized non-root container image, publishes the image to Docker Hub (`vijayvignesh960/calculator-api`), and idempotently rolls out the deployment via Docker Compose with health verification and email alerting.
 
 ---
 
@@ -73,34 +73,35 @@ The declarative pipeline is codified in `Jenkinsfile` and contains 6 discrete st
 
 #### Stage 1: Checkout
 - **Purpose**: Retrieves the exact commit that triggered the build.
-- **Implementation**: Uses Jenkins SCM checkout plugin (`checkout scm`) with clean workspace parameters.
-- **Automation**: Triggered instantly via GitHub Push Webhooks or fallback SCM polling (`pollSCM('H/5 * * * *')`).
+- **Implementation**: `checkout scm` of the `main` branch of the private GitHub repository, authenticated with the `github-cred` Jenkins credential.
+- **Automation**: A GitHub webhook (`githubPush()`) starts the build within seconds of a push. Jenkins runs inside WSL on a laptop, so ngrok publishes it at a public HTTPS URL, and the webhook is signed with a shared secret. `pollSCM('H/2 * * * *')` is kept as a fallback.
 
 #### Stage 2: Build
 - **Purpose**: Compiles the Java source code and prepares the application artifacts.
-- **Implementation**: Executes `mvn clean package -DskipTests`. Skips test execution during compilation to separate build-time syntax/compilation validation from test suite execution.
+- **Implementation**: Executes `mvn -B clean package -DskipTests` with JDK 17. Skips test execution during compilation to separate build-time syntax/compilation validation from test suite execution.
 
 #### Stage 3: Test
 - **Purpose**: Enforces quality gates and prevents regression by executing all unit and integration tests.
-- **Implementation**: Executes `mvn test`. Uses JUnit 5 Jupiter and Spring MVC `MockMvc`.
-- **Reporting**: Publishes JUnit XML test reports via `junit 'target/surefire-reports/**/*.xml'`. If any test case fails, the pipeline immediately halts, failing the build and preventing containerization or deployment.
+- **Implementation**: Executes `mvn -B test` (no `clean`, so the packaged JAR from Stage 2 is kept). Uses JUnit 5 Jupiter and Spring MVC `MockMvc`.
+- **Reporting**: Publishes JUnit XML test reports via `junit 'target/surefire-reports/*.xml'`. If any test case fails, the pipeline immediately halts, failing the build and preventing containerization or deployment.
 
 #### Stage 4: Docker Build
 - **Purpose**: Packages the application into a minimal, self-contained Docker container image.
-- **Implementation**: Executes `docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} -t ${DOCKER_IMAGE}:latest .`.
+- **Implementation**: `docker.build("vijayvignesh960/calculator-api:${BUILD_NUMBER}", '.')` (Docker Pipeline plugin), then tagged `latest`.
 - **Tagging**: Dual-tagging strategy: an immutable build-specific tag (`BUILD_NUMBER`) for traceability and rollback capability, and `latest` for production convenience.
 
 #### Stage 5: Push
 - **Purpose**: Publishes the validated container image to Docker Hub.
-- **Implementation**: Utilizes Jenkins Credential Store (`docker-hub-credentials`) through `withCredentials`. Performs standard `docker login` via standard input, pushes both tags to Docker Hub, and immediately issues `docker logout` to prevent credential exposure on disk.
+- **Implementation**: `docker.withRegistry('', 'DockerHubCred')` logs in with a Docker Hub access token held in the Jenkins Credentials store (never in the repository), pushes both tags, and logs out. A failed push fails the build.
 
 #### Stage 6: Deploy
 - **Purpose**: Orchestrates the multi-container stack deployment on the target host.
-- **Implementation**: Issues `docker compose down` followed by `docker compose up -d --remove-orphans`.
-- **Health Verification**: An active polling loop queries `http://localhost/actuator/health` up to 12 times at 5-second intervals until status `UP` is verified. This guarantees that deployment completion is determined by actual service health rather than merely container process start.
+- **Implementation**: `IMAGE_TAG=${BUILD_NUMBER} docker compose up -d --remove-orphans`, which deploys the exact image just pushed. There is deliberately no `docker compose down`: `up -d` only recreates containers whose image or configuration changed, so re-running the pipeline never tears down a healthy stack (Nginx keeps running and the API container is swapped in place).
+- **Health Verification**: A polling loop queries `http://localhost/actuator/health` through Nginx up to 24 times at 5-second intervals until status `UP`, then calls `/api/v1/add` as a smoke test; on timeout it prints the container logs and fails the build. This guarantees that deployment completion is determined by actual service health rather than merely container process start.
 
 #### Post-Build Actions: Email Notifications
-- Uses Jenkins Email Extension plugin (`emailext`) to send automated HTML status reports to `vijay.vignesh96000@gmail.com` upon build `success` or `failure`, including build number, commit hash, and console links.
+- Uses the Email Extension plugin (`emailext`) to send HTML status mails to `vijay.vignesh96000@gmail.com` on `success` and `failure` (the failure mail attaches the build log). Gmail SMTP (`smtp.gmail.com:465`, SSL) authenticates with an app password stored as the `gmail-smtp` credential.
+- `docker image prune -f` runs after every build to stop old build-number images from filling the disk.
 
 ---
 
@@ -124,21 +125,25 @@ The deployment features two coordinated services on an isolated bridge network `
 
 | # | Challenge | Root Cause | Engineering Solution |
 |---|---|---|---|
-| 1 | **Host Port 8080 Conflict** | Local Windows machine had existing background service (Jenkins) bound to port 8080. | Re-architected deployment to expose the application externally through Nginx Reverse Proxy on port 80 and secondary direct mapping on 8081, while internal Docker network communication remained on port 8080. |
-| 2 | **Docker Build Layer Invalidation** | Naive `COPY . .` invalidated the entire Maven dependency cache on any minor source code edit. | Decoupled build into two steps in Stage 1: copy `pom.xml` -> run `mvn dependency:go-offline` -> copy `src/` -> compile JAR. |
-| 3 | **Container Health Check Timing Race** | Spring Boot initialization takes 10-15 seconds. Initial HTTP requests immediately after `docker compose up` returned connection errors. | Added `start_period: 20s` and `interval: 10s` to Docker Compose healthcheck and implemented a resilient verification loop in Jenkinsfile polling `/actuator/health`. |
-| 4 | **Secure Credential Injection** | Risk of hardcoding Docker Hub credentials in script files or Git history. | Employed Jenkins `withCredentials` binding username and password variables into memory dynamically with standard input piping (`--password-stdin`) and immediate `docker logout`. |
+| 1 | **Windows vs Linux toolchain** | Jenkins was first installed natively on Windows, which forced `bat`/PowerShell branches into the Jenkinsfile and diverged from the Linux setup taught in the labs. | Removed the Windows install and ran Jenkins, Docker Engine, Maven and JDK 17 inside WSL 2 (Ubuntu 24.04), following the lab steps. The Jenkinsfile became plain `sh`. |
+| 2 | **CRLF line endings** | Files edited on Windows were checked out with CRLF, which breaks shell scripts and `mvnw` on Linux. | Added `.gitattributes` (`* text=auto eol=lf`) so the repository and the Jenkins workspace always use LF. |
+| 3 | **Deploy caused downtime on re-run** | The first pipeline ran `docker compose down` before `up`, taking the service offline on every build. | Deploy uses only `docker compose up -d`. Re-running the pipeline against a live stack succeeded while Nginx stayed up; only the API container was swapped (about 2.5 s). |
+| 4 | **Container name conflicts** | Compose derives its project name from the folder, so the Jenkins workspace and a local checkout fought over the fixed container names. | Pinned the project name with `name: calculator-stack` in `docker-compose.yml`. |
+| 5 | **Nginx 502 after redeploy** | Nginx resolved `calculator-api` once at startup and kept the old container IP. | Configured Docker's embedded DNS (`resolver 127.0.0.11`) and a variable `proxy_pass`, so the name is re-resolved after the API container is recreated. |
+| 6 | **Webhook to a laptop** | GitHub cannot reach `localhost:8080`. | ngrok (run as a systemd service) publishes Jenkins at a public HTTPS URL; the webhook is signed with a shared secret, and Poll SCM remains as a fallback. |
+| 7 | **Secrets** | Docker Hub, GitHub and Gmail credentials must never appear in the repository. | All five secrets live only in the Jenkins Credentials store (`DockerHubCred`, `github-cred`, `github-token`, `github-webhook-secret`, `gmail-smtp`). The git history was scanned before publishing. |
+| 8 | **Layer cache invalidation** | `COPY . .` invalidated the Maven dependency layer on every source edit. | Copy `pom.xml` and run `mvn dependency:go-offline` before copying `src/`. |
 
 ---
 
 ### 6. Verification & Test Results
 
 #### 6.1 Automated Test Execution (`mvn test`)
-- **Total Tests**: 24
-- **Passed**: 24
+- **Total Tests**: 28 (17 service unit tests, 9 MockMvc integration tests, 2 application context tests)
+- **Passed**: 28
 - **Failed**: 0
 - **Errors**: 0
-- **Coverage**: All operations (`add`, `subtract`, `multiply`, `divide`), boundary cases (negative, decimal, zero), division by zero exception validation, invalid parameter handling, and Spring Actuator health endpoint.
+- **Coverage**: All operations (`add`, `subtract`, `multiply`, `divide`), boundary cases (negative, decimal, zero), division by zero, NaN/Infinity inputs and overflowing results, non-numeric and missing parameters, unknown endpoint (404), and the Actuator health endpoint. Jenkins publishes the results on every build.
 
 #### 6.2 Endpoint Validation Evidence
 
@@ -169,7 +174,11 @@ HTTP/1.1 400 Bad Request
 Content-Type: application/json
 {"timestamp":"2026-09-12T08:12:04.391Z","status":400,"error":"Bad Request","message":"Division by zero is not allowed","path":"/api/v1/divide"}
 
-# 7. Invalid Parameter Validation (HTTP 400 Bad Request)
+# 7. Unknown endpoint (HTTP 404 Not Found)
+$ curl -s "http://localhost/api/v1/power"
+{"timestamp":"2026-10-10T11:24:04.543Z","status":404,"error":"Not Found","message":"No endpoint found for /api/v1/power","path":"/api/v1/power"}
+
+# 8. Invalid Parameter Validation (HTTP 400 Bad Request)
 $ curl -i "http://localhost/api/v1/add?a=xyz&b=5"
 HTTP/1.1 400 Bad Request
 Content-Type: application/json
@@ -178,9 +187,9 @@ Content-Type: application/json
 
 #### 6.3 Running Containers (`docker compose ps`)
 ```
-NAME             IMAGE                   STATUS                    PORTS
-calculator-api   calculator-api:latest   Up 14 seconds (healthy)   0.0.0.0:8081->8080/tcp
-reverse-proxy    nginx:alpine            Up 8 seconds              0.0.0.0:80->80/tcp
+NAMES            IMAGE                              STATUS                    PORTS
+calculator-api   vijayvignesh960/calculator-api:3   Up 56 seconds (healthy)   0.0.0.0:8081->8080/tcp
+reverse-proxy    nginx:alpine                       Up 50 seconds             0.0.0.0:80->80/tcp
 ```
 
 ---
@@ -189,14 +198,14 @@ reverse-proxy    nginx:alpine            Up 8 seconds              0.0.0.0:80->8
 
 During the laboratory demonstration:
 1. **Repository & Commits**: Display `git log --graph --oneline` showing clean commit history, feature branches, and pull request merge commits.
-2. **Triggering the Pipeline**: Make a code or comment change in `CalculatorController.java`, push commit to GitHub:
+2. **Triggering the Pipeline**: Make a visible change (for example `info.app.version` in `application.properties`) and push it to GitHub:
    ```bash
    git commit -am "chore: update api metadata for v1.0.1 demo"
    git push origin main
    ```
 3. **Live Jenkins Build**: Show the pipeline triggering automatically, progressing through all 6 stages with green status indicators.
 4. **Docker Hub**: Show the newly tagged image appearing in Docker Hub.
-5. **Live Verification**: Run `docker compose ps` to show healthy containers and query `http://localhost/api/v1/add?a=10&b=20` to show the updated deployment live.
+5. **Live Verification**: Run `docker compose ps` and `./demo.sh` to show healthy containers and every endpoint, and open `http://localhost/actuator/info` to show the new version is live.
 6. **Email Alert**: Show the automated confirmation email received in `vijay.vignesh96000@gmail.com`.
 
 ---
