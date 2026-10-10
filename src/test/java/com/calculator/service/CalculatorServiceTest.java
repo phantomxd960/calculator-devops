@@ -110,4 +110,18 @@ class CalculatorServiceTest {
     void parameterizedAddTest(double a, double b, double expected) {
         assertEquals(expected, calculatorService.add(a, b), 0.0001);
     }
+
+    @Test
+    @DisplayName("Should reject NaN and Infinity inputs")
+    void testNonFiniteInputsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> calculatorService.add(Double.NaN, 1.0));
+        assertThrows(IllegalArgumentException.class, () -> calculatorService.multiply(Double.POSITIVE_INFINITY, 2.0));
+        assertThrows(IllegalArgumentException.class, () -> calculatorService.divide(1.0, Double.NEGATIVE_INFINITY));
+    }
+
+    @Test
+    @DisplayName("Should reject results that overflow the double range")
+    void testOverflowRejected() {
+        assertThrows(IllegalArgumentException.class, () -> calculatorService.multiply(Double.MAX_VALUE, 10.0));
+    }
 }
