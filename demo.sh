@@ -2,7 +2,7 @@
 # Live-demo self-check for the Calculator CI/CD stack (run from WSL/Linux after `docker compose up -d`)
 set -u
 BASE=${BASE:-http://localhost}
-IMAGE=${DOCKER_IMAGE:-vijay96000/calculator-api}:${IMAGE_TAG:-latest}
+IMAGE=${DOCKER_IMAGE:-vijayvignesh960/calculator-api}:${IMAGE_TAG:-latest}
 fail=0
 
 step() { printf '\n\033[1;33m[%s]\033[0m\n' "$1"; }
