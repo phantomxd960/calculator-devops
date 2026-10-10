@@ -1,0 +1,5 @@
+# Linux project: keep LF in the repo and working tree so mvnw/scripts run under WSL and Jenkins
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.jar binary
+*.png binary
