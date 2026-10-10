@@ -2,114 +2,66 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE          = 'vijay96000/calculator-api'
-        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
-        NOTIFICATION_EMAIL    = 'vijay.vignesh96000@gmail.com'
-        STUDENT_NAME          = 'Vijay'
+        DOCKER_IMAGE       = 'vijayvignesh960/calculator-api'
+        DOCKER_CREDENTIALS = 'DockerHubCred'
+        NOTIFICATION_EMAIL = 'vijay.vignesh96000@gmail.com'
+        JAVA_HOME          = '/usr/lib/jvm/java-17-openjdk-amd64'
+        PATH               = "${JAVA_HOME}/bin:${env.PATH}"
     }
 
     triggers {
-        pollSCM('H/5 * * * *')
+        // GitHub webhook (preferred); Poll SCM is the fallback when the webhook is unreachable
         githubPush()
+        pollSCM('H/2 * * * *')
     }
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
         disableConcurrentBuilds()
         timeout(time: 20, unit: 'MINUTES')
+        timestamps()
     }
 
     stages {
         stage('Checkout') {
             steps {
-                echo "=== Stage 1: Checking out code from Git/GitHub ==="
                 checkout scm
+                sh 'git log -1 --oneline'
             }
         }
 
         stage('Build') {
             steps {
-                echo "=== Stage 2: Compiling and Packaging Spring Boot JAR ==="
-                script {
-                    try {
-                        if (isUnix()) {
-                            sh 'mvn clean package -DskipTests'
-                        } else {
-                            bat 'mvn clean package -DskipTests'
-                        }
-                    } catch (Exception e) {
-                        echo "Host maven not found, executing inside maven:3.9-eclipse-temurin-17 container..."
-                        if (isUnix()) {
-                            sh 'docker run --rm -v "${PWD}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn clean package -DskipTests'
-                        } else {
-                            bat 'docker run --rm -v "%WORKSPACE%":/workspace -w /workspace maven:3.9-eclipse-temurin-17 mvn clean package -DskipTests'
-                        }
-                    }
-                }
+                sh 'mvn -B clean package -DskipTests'
             }
         }
 
         stage('Test') {
             steps {
-                echo "=== Stage 3: Running JUnit 5 Unit & MockMvc Integration Tests ==="
-                script {
-                    try {
-                        if (isUnix()) {
-                            sh 'mvn clean test'
-                        } else {
-                            bat 'mvn clean test'
-                        }
-                    } catch (Exception e) {
-                        echo "Host maven not found, executing tests inside maven:3.9-eclipse-temurin-17 container..."
-                        if (isUnix()) {
-                            sh 'docker run --rm -v "${PWD}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn clean test'
-                        } else {
-                            bat 'docker run --rm -v "%WORKSPACE%":/workspace -w /workspace maven:3.9-eclipse-temurin-17 mvn clean test'
-                        }
-                    }
-                }
+                sh 'mvn -B test'
             }
             post {
                 always {
-                    junit testResults: 'target/surefire-reports/**/*.xml', allowEmptyResults: false
+                    junit 'target/surefire-reports/*.xml'
                 }
             }
         }
 
         stage('Docker Build') {
             steps {
-                echo "=== Stage 4: Building Multi-Stage Docker Image (${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}) ==="
                 script {
-                    if (isUnix()) {
-                        sh "docker build -t ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER} -t ${env.DOCKER_IMAGE}:latest ."
-                    } else {
-                        bat "docker build -t ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER} -t ${env.DOCKER_IMAGE}:latest ."
-                    }
+                    docker.build("${DOCKER_IMAGE}:${BUILD_NUMBER}", '.')
+                    sh "docker tag ${DOCKER_IMAGE}:${BUILD_NUMBER} ${DOCKER_IMAGE}:latest"
                 }
             }
         }
 
         stage('Push') {
             steps {
-                echo "=== Stage 5: Pushing Image to Docker Hub with Jenkins Credentials ==="
                 script {
-                    try {
-                        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
-                            if (isUnix()) {
-                                sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USER" --password-stdin'
-                                sh "docker push ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
-                                sh "docker push ${env.DOCKER_IMAGE}:latest"
-                                sh 'docker logout'
-                            } else {
-                                bat 'echo %DOCKER_PASSWORD% | docker login -u %DOCKER_USER% --password-stdin'
-                                bat "docker push ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
-                                bat "docker push ${env.DOCKER_IMAGE}:latest"
-                                bat 'docker logout'
-                            }
-                        }
-                    } catch (Exception e) {
-                        echo "INFO: Docker Hub push skipped or '${env.DOCKER_CREDENTIALS_ID}' not configured yet: ${e.message}"
-                        echo "To push to Docker Hub, create 'docker-hub-credentials' in Jenkins Credentials store."
+                    docker.withRegistry('', "${DOCKER_CREDENTIALS}") {
+                        sh "docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                        sh "docker push ${DOCKER_IMAGE}:latest"
                     }
                 }
             }
@@ -117,77 +69,51 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                echo "=== Stage 6: Deploying Stack with Docker Compose and Health Verification ==="
-                script {
-                    if (isUnix()) {
-                        sh 'docker compose down'
-                        sh 'docker compose up -d --remove-orphans'
-                        sh '''
-                            echo "Verifying deployment health at http://localhost/actuator/health..."
-                            sleep 10
-                            for i in $(seq 1 12); do
-                                if curl -sf http://localhost/actuator/health | grep -q '"status":"UP"'; then
-                                    echo "SUCCESS: Calculator API is UP and HEALTHY!"
-                                    exit 0
-                                fi
-                                echo "Health check attempt $i: waiting 5 seconds..."
-                                sleep 5
-                            done
-                            echo "ERROR: Health check timed out!"
-                            exit 1
-                        '''
-                    } else {
-                        bat 'docker compose down'
-                        bat 'docker compose up -d --remove-orphans'
-                        bat '''
-                            powershell -Command "Start-Sleep -Seconds 10; for ($i = 1; $i -le 12; $i++) { try { $r = Invoke-RestMethod -Uri 'http://localhost/actuator/health' -TimeoutSec 3; if ($r.status -eq 'UP') { Write-Output 'SUCCESS: Calculator API is UP and HEALTHY!'; exit 0 } } catch {}; Start-Sleep -Seconds 5 }; Write-Error 'ERROR: Health check timed out!'; exit 1"
-                        '''
-                    }
-                }
+                // `up -d` only recreates containers whose image/config changed, so re-runs
+                // never tear down a healthy stack (no `compose down` here).
+                sh 'IMAGE_TAG=${BUILD_NUMBER} docker compose up -d --remove-orphans'
+                sh '''
+                    for i in $(seq 1 24); do
+                        if curl -sf http://localhost/actuator/health | grep -q '"status":"UP"'; then
+                            echo "Deployment healthy"
+                            curl -s "http://localhost/api/v1/add?a=2&b=3"; echo
+                            docker compose ps
+                            exit 0
+                        fi
+                        echo "Waiting for health check ($i/24)..."
+                        sleep 5
+                    done
+                    docker compose ps
+                    docker compose logs --tail=50 calculator-api
+                    exit 1
+                '''
             }
         }
     }
 
     post {
+        always {
+            // keep the build-number tags small on disk; running containers keep their image
+            sh 'docker image prune -f'
+        }
         success {
-            echo "Pipeline succeeded! Sending email notification..."
-            emailext (
-                subject: "SUCCESS: Job '${env.JOB_NAME}' [Build #${env.BUILD_NUMBER}]",
-                body: """
-                    <h2>Build #${env.BUILD_NUMBER} Succeeded</h2>
-                    <p>Dear ${env.STUDENT_NAME},</p>
-                    <p>Your declarative CI/CD pipeline for <b>${env.JOB_NAME}</b> completed successfully.</p>
-                    <ul>
-                        <li><b>Build Number:</b> #${env.BUILD_NUMBER}</li>
-                        <li><b>Docker Image:</b> ${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}</li>
-                        <li><b>Git Branch:</b> ${env.GIT_BRANCH}</li>
-                        <li><b>Status:</b> HEALTHY (Actuator verified)</li>
-                        <li><b>Console Log:</b> <a href="${env.BUILD_URL}console">${env.BUILD_URL}console</a></li>
-                    </ul>
-                    <p>All unit and integration tests passed, the container was built, pushed to Docker Hub, and deployed via Docker Compose.</p>
-                """,
-                to: 'vijay.vignesh96000@gmail.com',
-                mimeType: 'text/html'
+            emailext(
+                to: "${NOTIFICATION_EMAIL}",
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                mimeType: 'text/html',
+                body: """<p>Build <b>#${env.BUILD_NUMBER}</b> of <b>${env.JOB_NAME}</b> succeeded.</p>
+                         <p>Image: ${DOCKER_IMAGE}:${env.BUILD_NUMBER} (pushed to Docker Hub and deployed with Docker Compose)</p>
+                         <p>Console: <a href="${env.BUILD_URL}console">${env.BUILD_URL}console</a></p>"""
             )
         }
-
         failure {
-            echo "Pipeline failed! Sending alert email notification..."
-            emailext (
-                subject: "FAILURE: Job '${env.JOB_NAME}' [Build #${env.BUILD_NUMBER}]",
-                body: """
-                    <h2>Build #${env.BUILD_NUMBER} Failed</h2>
-                    <p>Dear ${env.STUDENT_NAME},</p>
-                    <p>Your declarative CI/CD pipeline for <b>${env.JOB_NAME}</b> failed during execution.</p>
-                    <ul>
-                        <li><b>Build Number:</b> #${env.BUILD_NUMBER}</li>
-                        <li><b>Git Branch:</b> ${env.GIT_BRANCH}</li>
-                        <li><b>Console Log:</b> <a href="${env.BUILD_URL}console">${env.BUILD_URL}console</a></li>
-                    </ul>
-                    <p>Please check the console output to diagnose the issue.</p>
-                """,
-                to: 'vijay.vignesh96000@gmail.com',
-                mimeType: 'text/html'
+            emailext(
+                to: "${NOTIFICATION_EMAIL}",
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                mimeType: 'text/html',
+                body: """<p>Build <b>#${env.BUILD_NUMBER}</b> of <b>${env.JOB_NAME}</b> failed.</p>
+                         <p>Console: <a href="${env.BUILD_URL}console">${env.BUILD_URL}console</a></p>""",
+                attachLog: true
             )
         }
     }
