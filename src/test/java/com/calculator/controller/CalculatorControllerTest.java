@@ -115,4 +115,25 @@ class CalculatorControllerTest {
                 .andExpect(jsonPath("$.status", is(400)))
                 .andExpect(jsonPath("$.error", is("Bad Request")));
     }
+
+    @Test
+    @DisplayName("GET /api/v1/add?a=NaN should return HTTP 400")
+    void testNonFiniteParameterReturnsBadRequest() throws Exception {
+        mockMvc.perform(get("/api/v1/add")
+                        .param("a", "NaN")
+                        .param("b", "1")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status", is(400)));
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/power should return HTTP 404 with error JSON")
+    void testUnknownEndpointReturnsNotFound() throws Exception {
+        mockMvc.perform(get("/api/v1/power")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status", is(404)))
+                .andExpect(jsonPath("$.error", is("Not Found")));
+    }
 }
