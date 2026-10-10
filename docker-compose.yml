@@ -1,9 +1,13 @@
+# fixed project name so local runs and Jenkins runs manage the same stack
+name: calculator-stack
+
 services:
   calculator-api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: calculator-api:latest
+    # Jenkins sets IMAGE_TAG to the build number; a plain `docker compose up` builds/uses :latest
+    image: ${DOCKER_IMAGE:-vijay96000/calculator-api}:${IMAGE_TAG:-latest}
     container_name: calculator-api
     restart: unless-stopped
     ports:
