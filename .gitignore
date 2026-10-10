@@ -39,3 +39,6 @@ Thumbs.db
 
 # Assignment prompt file
 SPE_Mini_Project.docx
+
+# Course material (not part of the project)
+*.pptx
